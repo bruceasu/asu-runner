@@ -22,7 +22,7 @@ abstract public class Shell
     /**
      * Maximum command line length in Windows KB830473 documents this as 8191
      */
-    public static final int WINDOWS_MAX_SHELL_LENGHT = 8191;
+    public static final int WINDOWS_MAX_SHELL_LENGTH = 8191;
 
     /**
      * Checks if a given command (String[]) fits in the Windows maximum command line length Note
@@ -37,10 +37,10 @@ abstract public class Shell
         for (String s : commands) {
             len += s.length();
         }
-        if (len > WINDOWS_MAX_SHELL_LENGHT) {
+        if (len > WINDOWS_MAX_SHELL_LENGTH) {
             throw new IOException(String.format(
                     "The command line has a length of %d exceeds maximum allowed length of %d. "
-                            + "Command starts with: %s", len, WINDOWS_MAX_SHELL_LENGHT,
+                            + "Command starts with: %s", len, WINDOWS_MAX_SHELL_LENGTH,
                     String.join("", commands).substring(0, 100)));
         }
     }
@@ -440,6 +440,18 @@ abstract public class Shell
      */
     public static final String TOKEN_SEPARATOR_REGEX = WINDOWS ? "[|\n\r]" : "[ \t\n\r\f]";
 
+    private static void joinThread(Thread t)
+    {
+        while (t.isAlive()) {
+            try {
+                t.join();
+            } catch (InterruptedException ie) {
+                ie.printStackTrace();
+                t.interrupt(); // propagate interrupt
+            }
+        }
+    }
+
     /**
      * refresh interval in millis seconds
      */
@@ -529,7 +541,7 @@ abstract public class Shell
     /**
      * Run a command
      */
-    private void runCommand() throws IOException
+    private void runCommand() throws IOException, OutOfMemoryError
     {
         ProcessBuilder builder = new ProcessBuilder(getExecString());
         Timer timeOutTimer = null;
@@ -590,7 +602,6 @@ abstract public class Shell
         BufferedReader inReader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), charset));
         final StringBuffer errMsg = new StringBuffer();
-
         // read error and input streams as this would free up the buffers
         // free the error stream buffer
         Thread errThread = new Thread()
@@ -598,6 +609,7 @@ abstract public class Shell
             @Override
             public void run()
             {
+                setDaemon(true);
                 try {
                     String line = errReader.readLine();
                     while ((line != null) && !isInterrupted()) {
@@ -619,23 +631,36 @@ abstract public class Shell
 
         try {
             errThread.start();
-        } catch (IllegalStateException ise) {
-        } catch (OutOfMemoryError oe) {
-            throw oe;
+        } catch (IllegalStateException ignored) {
         }
 
         try {
             // parse the output
-            parseExecResult(inReader);
-            // clear the input stream buffer
-            String line = inReader.readLine();
-            while (line != null) {
-                line = inReader.readLine();
-            }
+            Thread outThread = new Thread()
+            {
+                @Override
+                public void run()
+                {
+                    setDaemon(true);
+                    try {
+                        parseExecResult(inReader);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            };
+            outThread.start();
+
             // wait for the process to finish and check the exit code
             exitCode = process.waitFor();
             // make sure that the error thread exits
             joinThread(errThread);
+            joinThread(outThread);
+            // clear the input stream buffer
+            //String line = inReader.readLine();
+            //while (line != null) {
+            //    line = inReader.readLine();
+            //}
             completed.set(true);
             //the timeout thread handling
             //taken care in finally block
@@ -678,18 +703,6 @@ abstract public class Shell
             }
             process.destroy();
             lastTime = System.currentTimeMillis();
-        }
-    }
-
-    private static void joinThread(Thread t)
-    {
-        while (t.isAlive()) {
-            try {
-                t.join();
-            } catch (InterruptedException ie) {
-                ie.printStackTrace();
-                t.interrupt(); // propagate interrupt
-            }
         }
     }
 
@@ -1067,6 +1080,8 @@ abstract public class Shell
         {
             if (handler != null) {
                 handler.handle(lines);
+            } else {
+                super.parseExecResult(lines);
             }
         }
 
